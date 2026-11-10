@@ -42,15 +42,31 @@ st.markdown(f"<style>{(Path(__file__).parent / 'style.css').read_text(encoding='
 
 
 # ============================================================================================ dữ liệu
-@st.cache_data
-def tai(path: str, sua_luc: float) -> pd.DataFrame:      # sua_luc: file ghi lại trong ngày thì đọc lại
-    return pt.tai_du_lieu(Path(path))
-
-
 @st.cache_resource
-def mo_hinh(path: str, sua_luc: float):
-    df = tai(path, sua_luc)
+def mo_hinh(path: str, sua_luc: float):                  # sua_luc: file ghi lại trong ngày thì tính lại
+    df = pt.tai_du_lieu(Path(path))
     return pt.hoi_quy_luong(df), pt.phan_loai_co_luong(df)[0], pt.kiem_dinh(df)
+
+
+@st.cache_data
+def tai(path: str, sua_luc: float) -> pd.DataFrame:
+    """Đọc 1 lần cho mỗi file; tính sẵn lương ước tính và chữ bỏ dấu để tìm kiếm."""
+    df = pt.tai_du_lieu(Path(path))
+    model = mo_hinh(path, sua_luc)[0][1]
+    df["uoc_tinh"] = model.predict(df[pt.CAT_FEATURES + pt.NUM_FEATURES]).clip(min=0.5).round(1)
+    df["tim"] = df["title"].map(lam_sach.bo_dau) + " " + df["company"].map(lam_sach.bo_dau)
+    return df
+
+
+@st.cache_data
+def bang_tin_tho(sua_luc: tuple) -> pd.DataFrame:       # sua_luc: thêm / ghi lại file thô thì tính lại
+    raw = pd.concat([pd.read_csv(f, usecols=["source", "crawled_at"], encoding="utf-8-sig")
+                     for f in sorted(lam_sach.RAW_DIR.glob("*_????-??-??.csv"))], ignore_index=True)
+    bang = pd.crosstab(raw["crawled_at"].str[:10],                  # năm-tháng-ngày: xếp đúng thứ tự ngày
+                       raw["source"].map({"careerviet": "CareerViet", "joboko": "JobOKO"}),
+                       margins=True, margins_name="Tổng")
+    bang.index = pd.Index([i if i == "Tổng" else ngay_vn(i) for i in bang.index], name="Ngày lấy tin")
+    return bang
 
 
 @st.cache_resource
@@ -190,11 +206,11 @@ def khung_cap_nhat(ngay_moi: str) -> None:
         else:
             st.error(f"Cập nhật bị lỗi (mã {p.returncode}). Xem dòng cuối nhật ký bên dưới.")
         st.code(cuoi_log(), language=None)
-        if st.button("Hiển thị dữ liệu mới", use_container_width=True):
+        if st.button("Hiển thị dữ liệu mới", width="stretch"):
             tt["p"] = None
             st.rerun()
         return
-    if st.button("Lấy dữ liệu hôm nay", type="primary", use_container_width=True):
+    if st.button("Lấy dữ liệu hôm nay", type="primary", width="stretch"):
         bat_dau_cap_nhat()
         st.rerun(scope="fragment")
     st.caption(f"Dữ liệu đến {ngay_moi}. Cần mạng và đóng các file Excel trong thư mục data.")
@@ -218,20 +234,19 @@ if not files:
     st.stop()
 
 file = files[-1]
-df_all = tai(str(file), file.stat().st_mtime).copy()
+df_all = tai(str(file), file.stat().st_mtime)
 (hq, model), bang_phan_loai, bang_kiem_dinh = mo_hinh(str(file), file.stat().st_mtime)
-df_all["uoc_tinh"] = model.predict(df_all[pt.CAT_FEATURES + pt.NUM_FEATURES]).clip(min=0.5).round(1)
 so_tin_ngay = df_all["crawl_date"].value_counts().sort_index(ascending=False)
 
 with st.container(border=True):
     c0, c1, c2, c3, c4 = st.columns([1.3, 1, 1.3, 1, .7], vertical_alignment="bottom")
     ngay = c0.selectbox("Ngày lấy tin", [TAT_CA] + so_tin_ngay.index[:5].tolist(), key="ngay",
-                        format_func=lambda d: f"Tất cả ({len(df_all):,} tin)".replace(",", ".") if d == TAT_CA
+                        format_func=lambda d: f"Tất cả từ {ngay_vn(so_tin_ngay.index[-1])} ({len(df_all):,} tin)".replace(",", ".") if d == TAT_CA
                         else f"{ngay_vn(d)} ({so_tin_ngay[d]} tin mới)")
     loai = c1.selectbox("Loại hình", [TAT_CA, "Thực tập", "Part-time"], key="loai")
     nganh = c2.selectbox("Ngành", [TAT_CA] + df_all["category"].value_counts().index.tolist(), key="nganh")
     noi = c3.selectbox("Tỉnh / thành", [TAT_CA] + df_all["location"].value_counts().index.tolist(), key="noi")
-    c4.button("Xóa bộ lọc", on_click=xoa_bo_loc, use_container_width=True,
+    c4.button("Xóa bộ lọc", on_click=xoa_bo_loc, width="stretch",
               disabled=(ngay, loai, nganh, noi) == (TAT_CA,) * 4)
 
 df = loc(df_all, ngay, loai, nganh, noi)
@@ -263,15 +278,15 @@ with tab1:
     a, b = st.columns(2)
     with a:
         st.markdown("#### Số tin theo ngành")
-        st.altair_chart(cot(df["category"].value_counts(), "Số tin"), use_container_width=True)
+        st.altair_chart(cot(df["category"].value_counts(), "Số tin"), width="stretch")
         st.markdown("#### Theo loại hình")
-        st.altair_chart(cot(df["loai_hinh"].value_counts(), "Số tin", XANH_LA), use_container_width=True)
+        st.altair_chart(cot(df["loai_hinh"].value_counts(), "Số tin", XANH_LA), width="stretch")
     with b:
         st.markdown("#### 10 tỉnh / thành nhiều tin nhất")
-        st.altair_chart(cot(df["location"].value_counts().head(10), "Số tin", XANH_LA), use_container_width=True)
+        st.altair_chart(cot(df["location"].value_counts().head(10), "Số tin", XANH_LA), width="stretch")
         st.markdown("#### Tin mới theo ngày lấy tin (5 ngày gần nhất)")
         theo_ngay = loc(df_all, TAT_CA, loai, nganh, noi)["crawl_date"].value_counts().sort_index(ascending=False)[:5]
-        st.altair_chart(cot(theo_ngay.rename(index=ngay_vn), "Tin mới"), use_container_width=True)
+        st.altair_chart(cot(theo_ngay.rename(index=ngay_vn), "Tin mới"), width="stretch")
 
 # ============================================================================================ 2. lương
 with tab2:
@@ -305,7 +320,7 @@ từ {so(q3)} triệu trở lên là mức tốt.</div></div>""", unsafe_allow_h
         if d.empty:
             st.caption("Chưa đủ dữ liệu (cần ngành có ít nhất 5 tin ghi lương).")
         else:
-            st.altair_chart(cot(d, "Mức phổ biến (triệu)", to_dam=nganh, dinh_dang=".1f"), use_container_width=True)
+            st.altair_chart(cot(d, "Mức phổ biến (triệu)", to_dam=nganh, dinh_dang=".1f"), width="stretch")
             st.caption("Chỉ tính ngành có ít nhất 5 tin ghi lương theo tháng. Ngành đang chọn tô màu cam.")
 
     with b:
@@ -317,7 +332,7 @@ từ {so(q3)} triệu trở lên là mức tốt.</div></div>""", unsafe_allow_h
             f_noi = st.selectbox("Khu vực", ["TP. Hồ Chí Minh", "Hà Nội", "Tỉnh khác"])
             f_loai = st.selectbox("Loại hình", list(pt.LOAI_HINH), format_func=pt.LOAI_HINH.get)
             f_kn = st.number_input("Số năm kinh nghiệm yêu cầu", 0.0, 5.0, 0.0, 0.5)
-            ok = st.form_submit_button("Ước tính", type="primary", use_container_width=True)
+            ok = st.form_submit_button("Ước tính", type="primary", width="stretch")
         if ok:
             x = pd.DataFrame([{"category": f_nganh, "khu_vuc": f_noi, "contract_type": f_loai, "source": s,
                                "experience_years": f_kn} for s in ("careerviet", "joboko")])
@@ -335,7 +350,7 @@ with tab3:
     d = df
     if q:
         tu = lam_sach.bo_dau(q)
-        d = d[(d["title"].map(lam_sach.bo_dau) + " " + d["company"].map(lam_sach.bo_dau)).str.contains(tu, regex=False)]
+        d = d[d["tim"].str.contains(tu, regex=False)]
     if con_han:
         d = d[d["con_han"]]
     if co_luong:
@@ -351,7 +366,7 @@ with tab3:
     x1.markdown(f"**{len(d):,} tin**".replace(",", ".") + (" · hiển thị 30 tin đầu" if len(d) > 30 else ""))
     x2.download_button("Tải danh sách (CSV)", bang.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"tin_tuyen_dung_{datetime.now():%Y-%m-%d}.csv", mime="text/csv",
-                       use_container_width=True)
+                       width="stretch")
     if d.empty:
         st.info("Không có tin nào. Thử từ khóa khác hoặc bỏ bớt điều kiện.")
     the_tin = []
@@ -367,7 +382,7 @@ with tab3:
     st.markdown('<div class="luoi-tin">' + "".join(the_tin) + "</div>", unsafe_allow_html=True)
     if len(d) > 30:
         with st.expander(f"Xem tất cả {len(d)} tin dạng bảng"):
-            st.dataframe(bang, hide_index=True, use_container_width=True,
+            st.dataframe(bang, hide_index=True, width="stretch",
                          column_config={"title": "Tên việc", "company": "Công ty", "category": "Ngành",
                                         "loai_hinh": "Loại hình", "location": "Tỉnh", "luong": "Lương",
                                         "deadline": "Hạn nộp",
@@ -379,18 +394,18 @@ def tab_phan_tich() -> None:
     with st.expander("Kiểm định giả thuyết (α = 0,05)", expanded=True):
         st.dataframe(bang_kiem_dinh.rename(columns={
             "kiem_dinh": "Kiểm định", "cau_hoi": "Câu hỏi", "H0": "Giả thuyết H0", "thong_ke": "Thống kê",
-            "p_value": "p-value", "ket_luan": "Kết luận"}), hide_index=True, use_container_width=True)
+            "p_value": "p-value", "ket_luan": "Kết luận"}), hide_index=True, width="stretch")
         st.caption("Lương lệch phải, không phân phối chuẩn → ưu tiên Mann-Whitney và Kruskal-Wallis. Dòng 'BỎ ngành "
                    "Giáo dục' kiểm tra lại kết luận khi loại ảnh hưởng của ngành.")
     with st.expander("Thống kê mô tả lương tháng"):
-        st.dataframe(pt.mo_ta_luong(df_all), hide_index=True, use_container_width=True)
-        st.dataframe(pt.mo_ta_luong(df_all, "category"), hide_index=True, use_container_width=True)
+        st.dataframe(pt.mo_ta_luong(df_all), hide_index=True, width="stretch")
+        st.dataframe(pt.mo_ta_luong(df_all, "category"), hide_index=True, width="stretch")
     with st.expander("Mô hình học máy"):
         st.markdown(f"**Hồi quy tuyến tính — dự đoán lương** (huấn luyện {hq.attrs['n_train']} tin, "
                     f"kiểm tra {hq.attrs['n_test']} tin)")
-        st.dataframe(hq, hide_index=True, use_container_width=True)
+        st.dataframe(hq, hide_index=True, width="stretch")
         st.markdown("**Phân loại tin công khai lương / thỏa thuận**")
-        st.dataframe(bang_phan_loai, hide_index=True, use_container_width=True)
+        st.dataframe(bang_phan_loai, hide_index=True, width="stretch")
         st.caption("Mô hình phân loại chỉ nhỉnh hơn mốc 'đoán bừa' → ngành, nơi làm, loại hình không đủ để biết "
                    "doanh nghiệp có công khai lương hay không; cần thêm thông tin như quy mô công ty.")
     thu_muc = sorted(p for p in pt.OUT_ROOT.glob("*") if p.is_dir()) if pt.OUT_ROOT.exists() else []
@@ -398,7 +413,7 @@ def tab_phan_tich() -> None:
         with st.expander(f"Bộ biểu đồ đầy đủ (từ 4_phan_tich.py, ngày {ngay_vn(thu_muc[-1].name)})"):
             hinh = st.columns(2)
             for i, p in enumerate(sorted(thu_muc[-1].glob("*.png"))):
-                hinh[i % 2].image(str(p), caption=p.stem, use_container_width=True)
+                hinh[i % 2].image(str(p), caption=p.stem, width="stretch")
 
 
 if HIEN_PHAN_TICH:
@@ -441,11 +456,7 @@ không làm lệch con số này.
 #### Cần lưu ý
 Chỉ có 2 trang tuyển dụng; nhiều tin không ghi kinh nghiệm; lương ước tính chỉ để tham khảo.
 """)
-        raw = pd.concat([pd.read_csv(f, usecols=["source", "crawled_at"], encoding="utf-8-sig")
-                         for f in sorted(lam_sach.RAW_DIR.glob("*_????-??-??.csv"))], ignore_index=True)
-        raw["Ngày lấy tin"] = raw["crawled_at"].str[:10].map(ngay_vn)
         st.markdown("#### Số tin lấy được theo ngày và trang (chưa làm sạch)")
-        st.dataframe(pd.crosstab(raw["Ngày lấy tin"], raw["source"].map({"careerviet": "CareerViet",
-                                                                          "joboko": "JobOKO"}),
-                                 margins=True, margins_name="Tổng"), use_container_width=True)
+        st.dataframe(bang_tin_tho(tuple(f.stat().st_mtime for f in lam_sach.RAW_DIR.glob("*_????-??-??.csv"))),
+                     width="stretch")
     st.caption(f"Nhóm 3 · Phân tích dữ liệu cho Môi trường doanh nghiệp (71DAEE10012) · file {file.name}")
