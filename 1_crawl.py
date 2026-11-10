@@ -6,12 +6,17 @@
 Kết quả: data/raw/careerviet_<YYYY-MM-DD>.csv, data/raw/joboko_<YYYY-MM-DD>.csv
     - Mỗi ngày chạy ra 1 file riêng mang ngày hôm đó (không ghi dồn vào 1 file).
     - Mỗi dòng là 1 tin, có cột `url` = link tin gốc để kiểm chứng.
-    - Chỉ tải tin MỚI: tin đã có ở các ngày trước được bỏ qua, không trùng.
+    - Chỉ tải trang CHI TIẾT của tin MỚI: tin đã có ở các ngày trước được bỏ qua, không trùng.
+    - Mỗi ngày còn lưu ảnh chụp TRANG DANH SÁCH (data/snapshot/<nguồn>_<ngày>.csv, cả tin đã thấy) rồi so với
+      ngày trước theo khóa nguồn + mã tin -> data/snapshot/thay_doi_<nguồn>_<ngày>.csv: tin mới / đã sửa
+      (ghi từng cột đổi) / không còn trong kết quả.
+    - Ghi tỷ giá Vietcombank của hôm thu thập vào data/ty_gia.csv (dùng khi làm sạch, xem ty_gia.py).
 
 Nguyên tắc (slide 6): chỉ lấy thông tin công khai, kiểm tra robots.txt trước mỗi URL,
 nghỉ ~1,5 giây giữa 2 lượt truy cập, không vượt rào chống bot.
 """
 import csv
+import hashlib
 import json
 import math
 import random
@@ -24,6 +29,8 @@ from urllib.parse import urljoin, urlsplit
 
 import requests
 from bs4 import BeautifulSoup
+
+import ty_gia
 
 # ============================== CẤU HÌNH ==============================
 MAX_PAGES = 20            # số trang danh sách tối đa cho mỗi từ khóa / trang
@@ -39,7 +46,10 @@ JOBOKO_URLS = [
     "https://vn.joboko.com/viec-lam-nganh-sinh-vien-lam-them-xni60",
 ]
 RAW_DIR = Path(__file__).parent / "data" / "raw"
-COLUMNS = ["source", "job_id", "title", "company",                      # tin
+SNAP_DIR = Path(__file__).parent / "data" / "snapshot"
+SNAP_COLS = ["title", "company", "salary_text", "location_text"]   # cột trang danh sách có -> đưa vào hash để so
+COT_THUONG_CO = ["title", "company", "salary_text", "employment_type", "date_posted", "deadline"]  # gần như luôn có
+COLUMNS =["source", "job_id", "title", "company",                      # tin
            "salary_text", "location_text", "country",                  # lương, địa điểm (nguyên văn)
            "employment_type", "hinh_thuc", "industry", "experience",   # loại hình, ngành, kinh nghiệm
            "date_posted", "deadline",                                  # thời gian (YYYY-MM-DD)
@@ -269,9 +279,62 @@ def parse_detail(source: str, row: dict, html: str) -> dict:
 TARGET_WORDS = re.compile(r"thực tập|intern|part.?time|bán thời gian|làm thêm|sinh viên", re.I)
 
 
-def crawl_source(source: str, listing, max_details: int) -> None:
+def chuan_hoa(text) -> str:
+    """Chuẩn hóa trước khi so 2 ngày: bỏ nhãn '(Mới)', '(Hot)'..., khoảng trắng thừa -> không báo sửa nhầm."""
+    return clean(re.sub(r"\((?:mới|new|hot|gấp|urgent)\)", " ", str(text or ""), flags=re.I))
+
+
+def luu_snapshot(source: str, jobs: list[dict], ngay: str) -> None:
+    """Ảnh chụp trang danh sách hôm nay (CẢ tin đã thấy): khóa nguồn + mã tin, hash các cột chính."""
+    SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    with open(SNAP_DIR / f"{source}_{ngay}.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=["source", "job_id", "crawl_date", "hash", *SNAP_COLS, "url"])
+        w.writeheader()
+        for r in jobs:
+            v = {c: chuan_hoa(r.get(c)) for c in SNAP_COLS}
+            h = hashlib.sha1("|".join(v.values()).encode("utf-8")).hexdigest()[:16]
+            w.writerow({"source": source, "job_id": r["job_id"], "crawl_date": ngay, "hash": h, **v, "url": r["url"]})
+
+
+def so_sanh_snapshot(source: str, ngay: str) -> list[dict] | None:
+    """So ảnh chụp ngày `ngay` với ảnh chụp gần nhất TRƯỚC đó, theo khóa nguồn + mã tin (không dùng tên vì tên
+    có thể bị sửa). Ghi data/snapshot/thay_doi_<nguồn>_<ngày>.csv. Chưa có ngày trước để so -> None."""
+    truoc = sorted(p for p in SNAP_DIR.glob(f"{source}_????-??-??.csv") if p.stem[-10:] < ngay)
+    if not truoc:
+        print(f"  {source}: chưa có ảnh chụp ngày trước để so (lần đầu lưu)")
+        return None
+
+    def doc(p):
+        with open(p, encoding="utf-8-sig") as f:
+            return {r["job_id"]: r for r in csv.DictReader(f)}
+
+    cu, moi, ngay_cu = doc(truoc[-1]), doc(SNAP_DIR / f"{source}_{ngay}.csv"), truoc[-1].stem[-10:]
+    dong = lambda k, tt, cot="", a="", b="": {"source": source, "job_id": k, "trang_thai": tt, "cot": cot,
+                                              "gia_tri_cu": a, "gia_tri_moi": b, "ngay_truoc": ngay_cu,
+                                              "ngay_nay": ngay, "url": (moi.get(k) or cu.get(k))["url"]}
+    out = [dong(k, "mới") for k in sorted(moi.keys() - cu.keys())]
+    for k in sorted(cu.keys() & moi.keys()):
+        if cu[k]["hash"] != moi[k]["hash"]:
+            # 1 ngày có, 1 ngày rỗng (vd trang không hiện lương) thì không tính là sửa
+            out += [dong(k, "đã sửa", c, cu[k][c], moi[k][c]) for c in SNAP_COLS
+                    if cu[k][c] and moi[k][c] and cu[k][c] != moi[k][c]]
+    # Chỉ có ở ngày trước: trang chỉ hiện tin còn hạn / có thể đẩy tin xuống trang sau -> KHÔNG kết luận là đã xóa
+    out += [dong(k, "không còn trong kết quả") for k in sorted(cu.keys() - moi.keys())]
+    with open(SNAP_DIR / f"thay_doi_{source}_{ngay}.csv", "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=["source", "job_id", "trang_thai", "cot", "gia_tri_cu", "gia_tri_moi",
+                                          "ngay_truoc", "ngay_nay", "url"])
+        w.writeheader()
+        w.writerows(out)
+    dem = {tt: len({r["job_id"] for r in out if r["trang_thai"] == tt})
+           for tt in ("mới", "đã sửa", "không còn trong kết quả")}
+    print(f"  {source}: so với ngày {ngay_cu}: {dem['mới']} tin mới, {dem['đã sửa']} tin đã sửa, "
+          f"{dem['không còn trong kết quả']} tin không còn trong kết quả")
+    return out
+
+
+def crawl_source(source: str, listing, max_details: int, ngay: str) -> None:
     # Mỗi ngày 1 file riêng: data/raw/<nguồn>_<YYYY-MM-DD>.csv (chỉ chứa tin MỚI lấy trong ngày)
-    path = RAW_DIR / f"{source}_{datetime.now():%Y-%m-%d}.csv"
+    path = RAW_DIR / f"{source}_{ngay}.csv"
     seen = set()
     for old in RAW_DIR.glob(f"{source}_*.csv"):     # tin đã có ở MỌI ngày trước -> bỏ qua
         with open(old, encoding="utf-8-sig") as f:
@@ -280,35 +343,56 @@ def crawl_source(source: str, listing, max_details: int) -> None:
     jobs = {}
     for r in listing:
         jobs.setdefault(r["job_id"], r)
-    new = [r for r in jobs.values() if r["job_id"] not in seen]
+    if not jobs:   # trang đổi cấu trúc / bị chặn: không ghi file rỗng, không ghi đè ảnh chụp
+        print("  " + "!" * 70 + f"\n  CẢNH BÁO: không đọc được tin nào từ trang danh sách {source}. Trang có thể đã "
+              "đổi cấu trúc hoặc đang lỗi.\n  Không ghi file nào cho nguồn này hôm nay; kiểm tra lại bộ chọn trong "
+              "1_crawl.py.\n  " + "!" * 70)
+        return
     # JobOKO có tag trên trang danh sách: tin có tag nhưng không liên quan thực tập/part-time -> bỏ qua
-    new = [r for r in new if not r["tags"] or TARGET_WORDS.search(r["title"] + r["tags"])][:max_details]
+    lien_quan = [r for r in jobs.values() if not r["tags"] or TARGET_WORDS.search(r["title"] + r["tags"])]
+    luu_snapshot(source, lien_quan, ngay)
+    so_sanh_snapshot(source, ngay)
+
+    new = [r for r in lien_quan if r["job_id"] not in seen][:max_details]
     print(f"  {source}: {len(jobs)} tin trên trang danh sách, {len(seen)} tin đã có, tải chi tiết {len(new)} tin mới")
+    if not new:
+        print("  -> Không có tin mới, không tạo file dữ liệu thô")
+        return
 
     is_new_file = not path.exists()
+    rows = []
     with open(path, "a", newline="", encoding="utf-8-sig" if is_new_file else "utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=COLUMNS)
         if is_new_file:
             writer.writeheader()
-        saved = 0
         for i, r in enumerate(new, 1):
             html = get(r["url"])
             if html:
-                writer.writerow(parse_detail(source, r, html))
+                rows.append(parse_detail(source, r, html))
+                writer.writerow(rows[-1])
                 f.flush()   # Ctrl+C giữa chừng vẫn giữ phần đã tải
-                saved += 1
             if i % 20 == 0 or i == len(new):
                 print(f"    {i}/{len(new)} tin")
-    print(f"  -> Đã lưu {saved} tin mới vào {path}")
+    print(f"  -> Đã lưu {len(rows)} tin mới vào {path}")
+    # Cột bình thường gần như luôn có mà hôm nay rỗng quá nửa -> trang chi tiết có thể đã đổi cấu trúc
+    rong = {c: sum(not r[c] for r in rows) / len(rows) for c in COT_THUONG_CO} if len(rows) >= 10 else {}
+    if any(v > 0.5 for v in rong.values()):
+        print("  " + "!" * 70 + f"\n  CẢNH BÁO: nhiều cột rỗng bất thường ở {source}: "
+              + ", ".join(f"{c} {v:.0%}" for c, v in rong.items() if v > 0.5)
+              + "\n  Trang chi tiết có thể đã đổi cấu trúc. Dữ liệu thô vẫn giữ để kiểm tra lại.\n  " + "!" * 70)
 
 
 def main(max_pages: int = MAX_PAGES, max_details: int = MAX_NEW_DETAILS) -> None:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
+    ngay = f"{datetime.now():%Y-%m-%d}"
     print("=" * 60, "\nBƯỚC 1: CRAWL DỮ LIỆU\n" + "=" * 60)
+    # Tỷ giá của hôm thu thập, để bước làm sạch đổi lương ngoại tệ theo đúng ngày này (ngày đã có thì bỏ qua)
+    if ty_gia.bo_sung([ngay]):
+        print(f"Đã lưu tỷ giá Vietcombank ngày {ngay} vào {ty_gia.FILE}")
     print("[1/2] CareerViet")
-    crawl_source("careerviet", careerviet_listing(max_pages), max_details)
+    crawl_source("careerviet", careerviet_listing(max_pages), max_details, ngay)
     print("[2/2] JobOKO")
-    crawl_source("joboko", joboko_listing(max_pages), max_details)
+    crawl_source("joboko", joboko_listing(max_pages), max_details, ngay)
 
 
 if __name__ == "__main__":

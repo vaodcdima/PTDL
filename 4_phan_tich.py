@@ -87,6 +87,9 @@ def du_lieu_thieu(df: pd.DataFrame) -> pd.DataFrame:
         "location": "Gán khu vực 'Không rõ'",
         "date_posted": "Bỏ qua khi vẽ biểu đồ theo thời gian",
         "deadline": "Bỏ qua (con_han = False)",
+        "salary_currency": "Không điền — tin 'Thỏa thuận' không có loại tiền",
+        "fx_rate": "Không điền — chỉ tin lương ngoại tệ mới có tỷ giá",
+        "fx_date": "Không điền — chỉ tin lương ngoại tệ mới có ngày tỷ giá",
     }
     thieu = df.isna().sum()
     out = pd.DataFrame({"so_dong_thieu": thieu, "ty_le_thieu_%": (thieu / len(df) * 100).round(1)})

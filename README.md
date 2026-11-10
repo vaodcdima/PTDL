@@ -48,7 +48,10 @@ Chạy riêng từng bước: `python 1_crawl.py` · `python 2_lam_sach.py` · `
 | `4_phan_tich.py` | Phân tích theo đề cương: Chương 2 (dữ liệu thiếu, mã hóa, chia train/test), Chương 3 (8 loại biểu đồ), Chương 4 (thống kê mô tả, kiểm định), Chương 5 (Regression, Logistic, Decision Tree, k-NN, K-Means, PCA) |
 | `web/app.py` | Trang web (Streamlit): bộ lọc theo ngày/loại hình/ngành/tỉnh, nhận định, lương, tra cứu, nút cập nhật dữ liệu |
 | `web/style.css` | Giao diện web (màu, khung) |
+| `ty_gia.py` | Tỷ giá Vietcombank theo ngày, dùng chung cho bước 1 và 2 |
 | `chay.py` | Chạy 1 → 2 → 4 |
+| `data/ty_gia.csv` | Tỷ giá chuyển khoản từng ngày thu thập (ngay, ma, ty_gia, lay_luc) |
+| `data/snapshot/` | Ảnh chụp trang danh sách mỗi ngày + file `thay_doi_*` (tin mới / đã sửa / không còn) |
 | `data/raw/<nguồn>_<ngày>.csv` | Dữ liệu thô, tin **mới** của ngày đó; mỗi dòng có `url` tin gốc |
 | `data/clean/jobs_clean_<ngày>.csv` | Dữ liệu sạch (gộp mọi ngày) để phân tích; lương tính bằng **triệu VND** |
 | `data/clean/jobs_clean_<ngày>.xlsx` | Bản Excel để xem + sheet báo cáo 7 bước |
@@ -59,13 +62,40 @@ Tổng hợp chi tiết toàn bộ dự án: [TONG_HOP_DU_AN.md](TONG_HOP_DU_AN.
 ## 7 bước làm sạch (`2_lam_sach.py`)
 1. Gộp dữ liệu 2 nguồn
 2. Khử trùng lặp theo (tên việc + công ty) đã bỏ dấu
-3. Chuẩn hóa lương → `salary_min`, `salary_max` (triệu VND); ngoại tệ (USD, EUR, JPY…) quy đổi theo **tỷ giá
-   chuyển khoản Vietcombank tại lúc chạy** (cần mạng, không dùng tỷ giá cố định); rỗng/0 → `salary_label = "Thỏa thuận"`, không xóa;
-   lương tháng ngoài 0,5–100 triệu → gắn cờ `salary_outlier`
+3. Chuẩn hóa lương → `salary_min`, `salary_max` (triệu VND); rỗng/0 → `salary_label = "Thỏa thuận"`, không xóa;
+   lương tháng ngoài 0,5–100 triệu → gắn cờ `salary_outlier`. Ngoại tệ: xem mục **Tỷ giá** bên dưới.
 4. Chuẩn hóa địa điểm → `location` (tỉnh/thành)
 5. Lọc `country = Việt Nam`
 6. Lọc `contract_type` ghi RÕ internship / part-time (loại tin chỉ suy từ từ khóa tìm kiếm)
 7. Gom ngành → `category`; encoding `category_code`, `location_code`; thêm `con_han` (còn hạn nộp)
+
+Đầu bước làm sạch có **kiểm cấu trúc**: file thô nào thiếu cột (so với `COLUMNS` trong `1_crawl.py`) thì dừng
+và báo rõ tên file, tên cột, không chạy tiếp ra dữ liệu rỗng. Dữ liệu thô không bao giờ bị sửa nên luôn làm sạch lại được.
+
+## Tỷ giá (`ty_gia.py`, `data/ty_gia.csv`)
+- **Tỷ giá nào:** tỷ giá **chuyển khoản** của Vietcombank.
+- **Ngày nào:** **ngày thu thập** tin đó (`crawl_date`), không phải ngày chạy làm sạch. Chọn ngày thu thập vì
+  CareerViet không ghi ngày đăng, chỉ có ngày "cập nhật". Nhờ vậy chạy lại bao nhiêu lần cũng ra cùng kết quả.
+- `1_crawl.py` ghi tỷ giá của hôm thu thập vào `data/ty_gia.csv` (mỗi ngày 1 lần). Các ngày cũ (13/10–09/11) được
+  bổ sung bằng **tỷ giá lịch sử thật** của đúng ngày đó (Vietcombank cho tra theo ngày), không phải ước lượng.
+- Làm sạch đọc bảng này, không cần mạng. Ngày nào còn thiếu thì thử tải; không tải được thì dùng ngày gần nhất
+  và đánh `fx_estimated = True`. Chỉ dừng khi có tin ngoại tệ mà chưa có tỷ giá nào của loại tiền đó.
+- File sạch giữ số gốc: `salary_text` (chữ gốc), `salary_currency` (VND, USD…), `fx_rate` (tỷ giá đã dùng),
+  `fx_date` (ngày của tỷ giá), `fx_estimated`.
+- Bổ sung tỷ giá cho mọi ngày đã thu thập: `python ty_gia.py`.
+
+## Phát hiện tin bị sửa / không còn (`data/snapshot/`)
+Mỗi lần thu thập, ngoài tải chi tiết tin **mới**, chương trình lưu ảnh chụp **toàn bộ trang danh sách** (cả tin đã
+thấy) vào `data/snapshot/<nguồn>_<ngày>.csv`, rồi so với ảnh chụp ngày gần nhất trước đó theo khóa **nguồn + mã tin**
+→ `data/snapshot/thay_doi_<nguồn>_<ngày>.csv`:
+- **mới**: chỉ có hôm nay; **đã sửa**: có cả 2 ngày nhưng tên việc / công ty / lương / nơi làm khác (ghi từng cột,
+  giá trị cũ → mới); **không còn trong kết quả**: chỉ có ngày trước (chưa kết luận là đã xóa, vì trang chỉ hiện tin
+  còn hạn và có thể đẩy tin xuống trang sau).
+- Trước khi so: bỏ nhãn "(Mới)", khoảng trắng thừa; một ngày có, một ngày rỗng thì không tính là sửa.
+- Giới hạn: chỉ so các cột có trên trang danh sách (hạn nộp không có ở đó nên chưa so); tin đăng lại có mã mới
+  thì coi là tin mới; chỉ bắt đầu so được từ ngày thứ hai có ảnh chụp (bắt đầu từ 10/11/2026).
+- Lúc thu thập, nếu trang danh sách không đọc ra tin nào (trang đổi cấu trúc / lỗi) thì **cảnh báo, không ghi file**;
+  nếu các cột thường luôn có (tên, công ty, lương, loại hình, ngày đăng, hạn nộp) rỗng quá nửa thì cảnh báo to.
 
 ## Phân tích (`4_phan_tich.py`) — bám đề cương 71DAEE10012
 | Chương | Nội dung trong code |

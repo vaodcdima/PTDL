@@ -2,7 +2,9 @@
 
     1. Gộp dữ liệu 2 nguồn
     2. Khử trùng lặp theo (tên việc + công ty) đã bỏ dấu
-    3. Chuẩn hóa lương: salary_min / salary_max (VND); rỗng hoặc 0 -> gắn nhãn "Thỏa thuận", KHÔNG xóa
+    3. Chuẩn hóa lương: salary_min / salary_max (VND); rỗng hoặc 0 -> gắn nhãn "Thỏa thuận", KHÔNG xóa.
+       Ngoại tệ đổi theo tỷ giá Vietcombank của NGÀY THU THẬP tin đó (data/ty_gia.csv, xem ty_gia.py);
+       giữ lại loại tiền, tỷ giá và ngày tỷ giá đã dùng để kiểm lại.
     4. Chuẩn hóa địa điểm: giá trị thô -> tỉnh/thành
     5. Lọc country = Việt Nam
     6. Phân loại contract_type, chỉ giữ tin ghi RÕ internship / part-time
@@ -13,20 +15,23 @@
 Đầu ra  : data/clean/jobs_clean_<YYYY-MM-DD>.csv + .xlsx (sheet "bao_cao_7_buoc" = số tin vào/ra từng bước)
           -> mỗi ngày chạy ra 1 bộ file riêng mang ngày hôm đó, file ngày cũ giữ nguyên
 """
+import importlib
 import re
 import sys
 import unicodedata
-import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-import requests
+
+import ty_gia
 
 RAW_DIR = Path(__file__).parent / "data" / "raw"
 CLEAN_DIR = Path(__file__).parent / "data" / "clean"
-TY_GIA_URL = "https://portal.vietcombank.com.vn/Usercontrols/TVPortal.TyGia/pXML.aspx"   # tối đa 1 lần / 5 phút
+COT_THO = importlib.import_module("1_crawl").COLUMNS      # các cột file thô phải có (1 chỗ định nghĩa)
 SALARY_MIN_OK, SALARY_MAX_OK = 0.5, 100     # khoảng lương tháng hợp lý (triệu VND)
+MA_NGOAI_TE = {"AUD", "CAD", "CHF", "CNY", "DKK", "EUR", "GBP", "HKD", "INR", "JPY", "KRW", "KWD", "MYR", "NOK",
+               "RUB", "SAR", "SEK", "SGD", "THB", "USD"}                  # các loại tiền Vietcombank niêm yết
 
 
 def bo_dau(text) -> str:
@@ -37,24 +42,21 @@ def bo_dau(text) -> str:
 
 
 # ============================================================ lương
-def lay_ty_gia() -> tuple[dict, str]:
-    """Tỷ giá CHUYỂN KHOẢN hiện tại của Vietcombank -> ({'USD': 26xxx.0, 'EUR': ...}, thời điểm cập nhật)."""
-    r = requests.get(TY_GIA_URL, timeout=30)
-    r.raise_for_status()
-    goc = ET.fromstring(r.content)
-    ty_gia = {e.get("CurrencyCode"): float(e.get("Transfer").replace(",", ""))
-              for e in goc.iter("Exrate") if re.fullmatch(r"[\d,.]+", e.get("Transfer") or "")}
-    return ty_gia, goc.findtext("DateTime", "")
+def ma_tien(text) -> str | None:
+    """Loại ngoại tệ ghi trong chuỗi lương: '500 USD' -> 'USD', '$800' -> 'USD', '5 triệu' -> None (VND)."""
+    raw = str(text or "").lower()
+    ma = next((m.upper() for m in re.findall(r"\b[a-z]{3}\b", raw) if m.upper() in MA_NGOAI_TE), None)
+    return ma or ("USD" if "$" in raw else None)
 
 
-def parse_salary(text, ty_gia: dict):
-    """'Lên đến 8 Triệu' -> (None, 8e6, 'MONTH'); '4 - 5 triệu' -> (4e6, 5e6, 'MONTH');
-    '25.000đ/giờ' -> (25000, 25000, 'HOUR'); 'Thỏa thuận' -> (None, None, None).
-    Ngoại tệ (USD, EUR, JPY... hoặc $) quy đổi theo ty_gia = {mã: VND} lấy lúc chạy."""
+def parse_salary(text, ty_gia_ngay: dict):
+    """'Lên đến 8 Triệu' -> (None, 8e6, 'MONTH', 'VND'); '4 - 5 triệu' -> (4e6, 5e6, 'MONTH', 'VND');
+    '25.000đ/giờ' -> (25000, 25000, 'HOUR', 'VND'); 'Thỏa thuận' -> (None, None, None, None).
+    Ngoại tệ quy đổi theo ty_gia_ngay = {mã: VND} của NGÀY THU THẬP tin đó; phần tử cuối là loại tiền gốc."""
     raw = str(text or "").lower()
     key = bo_dau(text)
     if not re.search(r"\d", raw):
-        return None, None, None
+        return None, None, None, None
     unit = "HOUR" if re.search(r"/\s*(giờ|h)\b|theo giờ|\bgiờ\b", raw) else "MONTH"
     nums = []
     for num, word in re.findall(r"(\d+(?:[.,]\d+)*)(?![.,]?\d)\s*(?:(triệu|tr|m|k|nghìn|ngàn)(?![a-zà-ỹ]))?", raw)[:2]:
@@ -63,8 +65,7 @@ def parse_salary(text, ty_gia: dict):
         else:                                                    # 1,000 / 10.000.000
             val = float(re.sub(r"[.,](?=\d{3}\b)", "", num).replace(",", "."))
         nums.append([val, {"triệu": 1e6, "tr": 1e6, "m": 1e6, "k": 1e3, "nghìn": 1e3, "ngàn": 1e3}.get(word)])
-    ma = next((m.upper() for m in re.findall(r"\b[a-z]{3}\b", raw) if m.upper() in ty_gia),
-              "USD" if "$" in raw else None)
+    ma = ma_tien(text)
     for i, (val, mult) in enumerate(nums):
         if mult:
             continue
@@ -73,24 +74,28 @@ def parse_salary(text, ty_gia: dict):
             continue
         other = nums[1 - i][1] if len(nums) == 2 else None   # "4 - 5 triệu": mượn đơn vị số sau
         nums[i][1] = other or (1e6 if unit == "MONTH" and not ma else 1)
-    rate = ty_gia[ma] if ma else 1
+    rate = ty_gia_ngay[ma] if ma else 1          # thiếu tỷ giá -> KeyError, không âm thầm coi là VND
     vals = [v * m * rate for v, m in nums]
+    ma = ma or "VND"
     if len(vals) == 2:
-        return min(vals), max(vals), unit
+        return min(vals), max(vals), unit, ma
     if re.search(r"len den|toi da|up ?to|duoi", key) or "<" in raw:
-        return None, vals[0], unit
+        return None, vals[0], unit, ma
     if re.search(r"\btren\b|\btu\b|toi thieu", key) or ">" in raw:
-        return vals[0], None, unit
-    return vals[0], vals[0], unit
+        return vals[0], None, unit, ma
+    return vals[0], vals[0], unit, ma
 
 
 # Tự kiểm tra nhanh hàm đọc lương với tỷ giá giả (chạy mỗi lần import)
 _TG = {"USD": 25_000.0, "EUR": 30_000.0}
-assert parse_salary("500 - 1,000 USD", _TG)[:2] == (12.5e6, 25e6)
+assert parse_salary("500 - 1,000 USD", _TG) == (12.5e6, 25e6, "MONTH", "USD")
 assert parse_salary("$800", _TG)[:2] == (20e6, 20e6)
 assert parse_salary("1.000 EUR", _TG)[:2] == (30e6, 30e6)
-assert parse_salary("800.000 - 5 Triệu VND", _TG)[:2] == (8e5, 5e6)
-assert parse_salary("Thỏa thuận", _TG) == (None, None, None)
+assert parse_salary("800.000 - 5 Triệu VND", _TG) == (8e5, 5e6, "MONTH", "VND")
+assert parse_salary("Thỏa thuận", _TG) == (None, None, None, None)
+# Cùng chữ lương, 2 ngày thu thập có tỷ giá khác nhau -> 2 kết quả khác nhau (tỷ giá thật 13/10 và 10/11)
+assert parse_salary("100 - 150 USD", {"USD": 25_720.0})[:2] == (2_572_000.0, 3_858_000.0)
+assert parse_salary("100 - 150 USD", {"USD": 25_410.0})[:2] == (2_541_000.0, 3_811_500.0)
 
 
 # ============================================================ địa điểm
@@ -210,9 +215,17 @@ def main() -> None:
     files = sorted(RAW_DIR.glob("*_????-??-??.csv"))
     if not files:
         sys.exit("Chưa có dữ liệu trong data/raw — hãy chạy 1_crawl.py trước.")
+    # Kiểm cấu trúc trước khi gộp: trang web đổi cấu trúc -> file thô thiếu cột -> dừng, báo rõ file nào cột nào
+    thieu = {f.name: sorted(set(COT_THO) - set(pd.read_csv(f, nrows=0, encoding="utf-8-sig").columns)) for f in files}
+    thieu = {ten: cot for ten, cot in thieu.items() if cot}
+    if thieu:
+        sys.exit("\nLỖI: file thô thiếu cột (trang web có thể đã đổi cấu trúc):\n"
+                 + "\n".join(f"  {ten}: thiếu {', '.join(cot)}" for ten, cot in thieu.items())
+                 + "\nDừng làm sạch để không ra dữ liệu rỗng/sai. Sửa 1_crawl.py hoặc file thô rồi chạy lại.")
     df = pd.concat([pd.read_csv(f, dtype=str, encoding="utf-8-sig") for f in files], ignore_index=True).fillna("")
     df["crawl_date"] = df["crawled_at"].str[:10]
-    step(f"[1] Gộp 2 nguồn: {len(df):,} tin thô từ {len(files)} file  {df['source'].value_counts().to_dict()}")
+    step(f"[1] Gộp 2 nguồn: {len(df):,} tin thô từ {len(files)} file  {df['source'].value_counts().to_dict()}"
+         f"\n    Kiểm cấu trúc: cả {len(files)} file đủ {len(COT_THO)} cột")
     step(f"    Số tin theo ngày thu thập: {df['crawl_date'].value_counts().sort_index().to_dict()}")
 
     # 2. Khử trùng lặp
@@ -224,14 +237,29 @@ def main() -> None:
     df = df.drop_duplicates("_key").drop(columns="_key").reset_index(drop=True)
     step(f"[2] Khử trùng lặp (tên việc + công ty, đã bỏ dấu): {n:,} -> {len(df):,} tin (loại {n - len(df):,})")
 
-    # 3. Lương — ngoại tệ quy đổi theo tỷ giá Vietcombank lúc chạy (không dùng tỷ giá cố định)
-    try:
-        ty_gia, cap_nhat = lay_ty_gia()
-    except (requests.RequestException, ET.ParseError) as e:
-        sys.exit(f"\nLỖI: không lấy được tỷ giá Vietcombank ({e}). Kiểm tra mạng rồi chạy lại "
-                 "`python 2_lam_sach.py` — dữ liệu thô đã lưu, không mất gì.")
-    step(f"    Tỷ giá Vietcombank (chuyển khoản, cập nhật {cap_nhat}): 1 USD = {ty_gia['USD']:,.0f} đ")
-    parsed = df["salary_text"].map(lambda t: parse_salary(t, ty_gia))
+    # 3. Lương — ngoại tệ đổi theo tỷ giá Vietcombank CỦA NGÀY THU THẬP tin đó (không phải ngày chạy làm sạch),
+    #    nên chạy lại bao nhiêu lần cũng ra cùng kết quả. Bảng tỷ giá theo ngày: data/ty_gia.csv (ty_gia.py)
+    them = ty_gia.bo_sung(df["crawl_date"].unique())     # chỉ tải ngày còn thiếu; không có mạng vẫn chạy tiếp
+    bang = ty_gia.doc()
+    ma = [ma_tien(t) for t in df["salary_text"]]        # list, không dùng Series: pandas đổi None thành NaN
+    chon = [ty_gia.chon(bang, d, m) if m else (None, False) for d, m in zip(df["crawl_date"], ma)]
+    khong_co = sorted({m for t, m, (d, _) in zip(df["salary_text"], ma, chon) if m and d is None and re.search(r"\d", t)})
+    if khong_co:
+        sys.exit(f"\nLỖI: có tin lương {', '.join(khong_co)} nhưng data/ty_gia.csv chưa có tỷ giá nào của loại tiền này. "
+                 "Khi có mạng chạy `python ty_gia.py` rồi chạy lại — dữ liệu thô vẫn còn nguyên.")
+    parsed = [parse_salary(t, bang[d] if d else {}) for t, (d, _) in zip(df["salary_text"], chon)]
+    ngoai = [p[3] not in (None, "VND") for p in parsed]
+    df["salary_currency"] = [p[3] or "" for p in parsed]                       # loại tiền gốc ghi trong tin
+    df["fx_rate"] = [bang[d][p[3]] if n else None for p, (d, _), n in zip(parsed, chon, ngoai)]
+    df["fx_date"] = [d if n else "" for (d, _), n in zip(chon, ngoai)]          # ngày của tỷ giá đã dùng
+    df["fx_estimated"] = [u if n else False for (_, u), n in zip(chon, ngoai)]  # True: không có đúng ngày
+    n_ngoai, n_uoc = sum(ngoai), int(df["fx_estimated"].sum())
+    step(f"    Tỷ giá: chuyển khoản Vietcombank của NGÀY THU THẬP mỗi tin (data/ty_gia.csv"
+         f"{', vừa thêm ' + ', '.join(them) if them else ''}); {n_ngoai} tin lương ngoại tệ: "
+         f"{n_ngoai - n_uoc} tin đúng ngày, {n_uoc} tin dùng ngày gần nhất (fx_estimated = True)")
+    for d in sorted({d for d, n in zip(df["fx_date"], ngoai) if n}):
+        step(f"      tỷ giá ngày {d}: 1 USD = {bang[d]['USD']:,.0f} đ")
+    parsed = [p[:3] for p in parsed]
     # Đơn vị: TRIỆU VND (vd 4.5 = 4.500.000đ) cho gọn, dễ đọc, dễ vẽ biểu đồ
     df["salary_min"] = [round(p[0] / 1e6, 3) if p[0] else None for p in parsed]
     df["salary_max"] = [round(p[1] / 1e6, 3) if p[1] else None for p in parsed]
@@ -294,6 +322,7 @@ CLEAN_COLUMNS = [
     "category", "contract_type", "location", "country",                       # phân loại
     "salary_min", "salary_max", "salary_mid", "salary_unit", "salary_label",  # lương (triệu VND)
     "salary_outlier", "salary_text", "experience_years",
+    "salary_currency", "fx_rate", "fx_date", "fx_estimated",                  # lương gốc: loại tiền, tỷ giá, ngày tỷ giá
     "date_posted", "deadline", "con_han",                                     # thời gian (con_han = còn hạn nộp)
     "category_code", "location_code",                                         # mã hóa cho ML
     "url", "crawl_date",                                                      # truy vết: link gốc, ngày thu thập

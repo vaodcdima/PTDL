@@ -448,7 +448,7 @@ tuyển và thương lượng lương, **nhà trường** biết ngành nào c�
 
 #### Dữ liệu lấy từ đâu?
 Từ careerviet.vn và vn.joboko.com: chỉ lấy tin công khai, đúng quy định của từng trang (robots.txt), nghỉ 1,5 giây
-giữa các lượt; làm sạch 7 bước; lương ngoại tệ đổi theo tỷ giá Vietcombank lúc chạy. Mỗi tin giữ link gốc.
+giữa các lượt; làm sạch 7 bước; lương ngoại tệ đổi theo tỷ giá Vietcombank của ngày lấy tin đó. Mỗi tin giữ link gốc.
 
 **Mức lương phổ biến** là mức ở giữa: một nửa số tin trả thấp hơn, một nửa trả cao hơn. Vài tin lương rất cao
 không làm lệch con số này.

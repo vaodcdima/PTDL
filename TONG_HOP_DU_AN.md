@@ -107,7 +107,7 @@ Tất cả nằm trong thư mục `data/` của dự án. Mỗi ngày một file
 | Đường dẫn | Nội dung | Ai dùng |
 |---|---|---|
 | `data/raw/careerviet_<ngày>.csv`, `joboko_<ngày>.csv` | Dữ liệu thô: tin mới của ngày đó, 16 cột, không sửa tay. Hiện có 6 file | `2_lam_sach.py` |
-| `data/clean/jobs_clean_<ngày>.csv` | Dữ liệu sạch: gộp mọi ngày, 23 cột | Code phân tích, web |
+| `data/clean/jobs_clean_<ngày>.csv` | Dữ liệu sạch: gộp mọi ngày, 27 cột | Code phân tích, web |
 | `data/clean/jobs_clean_<ngày>.xlsx` | Bản Excel: có bộ lọc, thêm sheet `bao_cao_7_buoc` | Người xem |
 | `data/phan_tich/<ngày>/` | 10 biểu đồ PNG và `ket_qua_phan_tich.xlsx` | Báo cáo, web |
 | `data/cap_nhat.log` | Nhật ký mỗi lần bấm nút cập nhật trên web | Khi cần xem lỗi |
@@ -152,10 +152,10 @@ PTDL/
 | Lên đến 8 Triệu VND | – | 8 | Có lương |
 | 4 - 5 triệu | 4 | 5 | Có lương |
 | 800.000 - 5 Triệu VND | 0,8 | 5 | Có lương |
-| 500 - 1,000 USD | 12,8 | 25,6 | Có lương |
+| 100 - 150 USD (lấy ngày 13/10) | 2,572 | 3,858 | Có lương (tỷ giá 13/10: 25.720 đ) |
 | Cạnh tranh | – | – | Thỏa thuận |
 
-**Tỷ giá không cố định, theo yêu cầu của thầy.** Hàm `lay_ty_gia()` lấy tỷ giá chuyển khoản mới nhất từ bảng tỷ giá XML của Vietcombank mỗi lần chạy, áp dụng cho mọi ngoại tệ Vietcombank niêm yết, và ghi tỷ giá đã dùng vào báo cáo. Lần chạy ngày 04/11: 1 USD = 25.580 đ. Nếu không lấy được tỷ giá, chương trình dừng và báo lỗi chứ không dùng số cũ; dữ liệu thô vẫn còn nguyên.
+**Tỷ giá: chuyển khoản Vietcombank của NGÀY THU THẬP tin đó.** Lần đầu nhóm dùng tỷ giá cố định (thầy góp ý), sau đổi sang tỷ giá lúc chạy làm sạch; buổi góp ý 10/11 thầy hỏi tiếp "tỷ giá của ngày nào", vì cách đó đổi mọi tin, kể cả tin lấy từ 13/10, theo tỷ giá hôm chạy. Nay `1_crawl.py` ghi tỷ giá của hôm thu thập vào `data/ty_gia.csv`; các ngày cũ được bổ sung bằng tỷ giá lịch sử thật của đúng ngày (Vietcombank cho tra theo ngày; 13/10: 25.720 đ, 10/11: 25.410 đ). Làm sạch đọc bảng này nên không cần mạng và chạy lại luôn ra cùng kết quả; file sạch giữ `salary_currency`, `fx_rate`, `fx_date`, `fx_estimated` để kiểm lại. Chọn ngày thu thập vì CareerViet không ghi ngày đăng. Code: `ty_gia.py`.
 
 **Ví dụ bước 6.** Tin được giữ nếu ghi rõ ở 1 trong 3 chỗ: loại hình nhà tuyển dụng chọn, ô “Hình thức”, hoặc tiêu đề.
 
@@ -342,7 +342,9 @@ Viết bằng Streamlit, để người không biết code cũng xem và tra c�
 | Làm sạch đúng theo slide của nhóm | Đủ 7 bước | `2_lam_sach.py` |
 | Mỗi ngày một file, có ghi ngày, không gộp | Tên file có ngày tháng năm | `data/raw/`, `data/clean/` |
 | Chỉ giữ Excel ở thư mục clean, bỏ báo cáo .txt | Báo cáo nằm trong sheet `bao_cao_7_buoc` | `data/clean/` |
-| Quy đổi ngoại tệ theo giá hiện tại, không dùng số cứng | Lấy tỷ giá Vietcombank mỗi lần chạy | `lay_ty_gia()` trong `2_lam_sach.py` |
+| Quy đổi ngoại tệ không dùng số cứng; tỷ giá của đúng ngày (góp ý 10/11) | Tỷ giá Vietcombank của ngày thu thập, giữ số gốc | `ty_gia.py`, `data/ty_gia.csv` |
+| Hệ thống phải nhận ra tin bị sửa / gỡ (góp ý 10/11) | Ảnh chụp danh sách mỗi ngày, so theo nguồn + mã tin | `data/snapshot/`, `1_crawl.py` |
+| Schema có thể đổi (góp ý 10/11) | Kiểm đủ cột trước khi làm sạch; không ghi file rỗng | `2_lam_sach.py`, `1_crawl.py` |
 | Code chuẩn đề cương môn | Chương 2 đến Chương 5 | `4_phan_tich.py` |
 | Giải quyết bài toán thực tế, nghĩ như doanh nghiệp | Khuyến nghị cho 3 nhóm người dùng | Mục 11, tab Tổng quan |
 | Web để demo, dễ dùng | 5 tab, tra cứu, ước tính lương | `web/app.py` |
@@ -394,7 +396,7 @@ Viết bằng Streamlit, để người không biết code cũng xem và tra c�
 | `url` | Link tin gốc | https://careerviet.vn/... |
 | `crawled_at` | Thời điểm thu thập | 2026-10-12 23:01 |
 
-**Dữ liệu sạch** (23 cột): `data/clean/jobs_clean_<ngày>.csv`
+**Dữ liệu sạch** (27 cột): `data/clean/jobs_clean_<ngày>.csv`
 
 | Nhóm | Cột | Ý nghĩa |
 |---|---|---|
@@ -407,6 +409,7 @@ Viết bằng Streamlit, để người không biết code cũng xem và tra c�
 | | `salary_label` | `Có lương` hoặc `Thỏa thuận` |
 | | `salary_outlier` | Cờ lương tháng ngoài 0,5–100 triệu |
 | | `salary_text` | Chuỗi lương gốc để đối chiếu |
+| | `salary_currency`, `fx_rate`, `fx_date`, `fx_estimated` | Loại tiền gốc; tỷ giá, ngày tỷ giá đã dùng (chỉ tin ngoại tệ); True nếu phải dùng ngày gần nhất |
 | Kinh nghiệm | `experience_years` | Số năm yêu cầu; 0 là không yêu cầu, trống là không ghi |
 | Thời gian | `date_posted`, `deadline`, `con_han` | Ngày đăng, hạn nộp, còn hạn hay không |
 | Mã hóa | `category_code`, `location_code` | Số nguyên cho mô hình |
